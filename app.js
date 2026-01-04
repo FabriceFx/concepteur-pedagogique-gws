@@ -647,12 +647,58 @@ App.Timeline = {
 App.Data = {
     saveProject, hasAutosave: () => false, loadProjectFromObject: (obj) => { /* Load logic */ } 
 };
+// --- À COLLER À LA PLACE ---
 App.Export = {
+    // 1. Le gestionnaire du menu déroulant (mis à jour)
     handleExport: (sel) => {
-        if(sel.value === 'markdown') exportMarkdown();
-        if (sel.value === 'gdoc_api') App.Export.exportToGoogleDoc();
-        // ... other exports
+        if (sel.value === 'markdown') exportMarkdown();
+        if (sel.value === 'gdoc_api') App.Export.exportToGoogleDoc(); // <--- Nouvelle option détectée ici
+        
+        // Réinitialise le menu déroulant
         sel.value = '';
+    },
+
+    // 2. La nouvelle fonction qui parle à Google Apps Script
+    exportToGoogleDoc: async function() {
+        // Pour changer le texte pendant le chargement (optionnel mais sympa pour l'UX)
+        const btnOption = document.querySelector('option[value="gdoc_api"]'); 
+        
+        // ⚠️ REMPLACEZ L'URL CI-DESSOUS PAR CELLE DE VOTRE DÉPLOIEMENT APPS SCRIPT ⚠️
+        const GAS_ENDPOINT_URL = "https://script.google.com/macros/s/VOTRE_ID_DE_DEPLOYEMENT_ICI/exec";
+
+        if (GAS_ENDPOINT_URL.includes("VOTRE_ID")) {
+            alert("Attention : Vous n'avez pas configuré l'URL du script dans app.js !");
+            return;
+        }
+
+        try {
+            document.body.style.cursor = 'wait'; // Indique que ça travaille
+            
+            // Récupération des données du projet (fonction existante dans app.js)
+            const projectData = buildExportProjectData();
+
+            // Envoi à Google Apps Script
+            const response = await fetch(GAS_ENDPOINT_URL, {
+                method: "POST",
+                body: JSON.stringify(projectData)
+            });
+
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                if(confirm("Document généré avec succès ! Voulez-vous l'ouvrir maintenant ?")) {
+                    window.open(result.url, '_blank');
+                }
+            } else {
+                throw new Error(result.message || "Erreur inconnue du script.");
+            }
+
+        } catch (error) {
+            console.error("Erreur Export:", error);
+            alert("Une erreur est survenue lors de la génération :\n" + error.message);
+        } finally {
+            document.body.style.cursor = 'default';
+        }
     }
 };
 
