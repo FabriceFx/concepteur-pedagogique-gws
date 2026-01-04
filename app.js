@@ -72,17 +72,20 @@ window.onload = () => {
         if (pref === 'hc') document.body.classList.add('hc');
     } catch (e) {}
     
+    // Initialisation de l'historique AVANT de charger ou créer quoi que ce soit
+    initHistory();
+    initHistoryWatchers();
+
     let restored = false;
     if (App.Data.hasAutosave()) {
         restored = maybeRestoreAutosave();
     }
     if (!restored) {
-        addActivity();
+        // On ne capture pas l'historique pour l'état initial vide
+        addActivity(false); 
     }
 
     initAutosaveWatchers();
-    initHistory();
-    initHistoryWatchers();
     App.UI.updateContrastToggleUI();
 };
 
@@ -208,6 +211,104 @@ function safeAddOutcome() {
     addOutcome();
 }
 
+/* --- GESTION DE L'HISTORIQUE (UNDO/REDO) --- */
+let undoStack = [];
+let redoStack = [];
+let __currentSnapshot = null;
+let __pendingDragSnapshot = null;
+
+function initHistory() {
+    undoStack = [];
+    redoStack = [];
+    __currentSnapshot = snapshotProject();
+}
+
+function initHistoryWatchers() {
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+            e.preventDefault();
+            undo();
+        }
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+            e.preventDefault();
+            redo();
+        }
+    });
+}
+
+function snapshotProject() {
+    return JSON.stringify(buildExportProjectData());
+}
+
+// Appelé AVANT une action destructrice
+function historyCaptureNow() {
+    const freshSnapshot = snapshotProject();
+    if (freshSnapshot === __currentSnapshot) return;
+    if (__currentSnapshot) undoStack.push(__currentSnapshot);
+    __currentSnapshot = freshSnapshot;
+    redoStack = [];
+    if (undoStack.length > 50) undoStack.shift();
+}
+
+function pushUndoSnapshot(snapshotStr) {
+    if (!snapshotStr) return;
+    undoStack.push(snapshotStr);
+    redoStack = [];
+    __currentSnapshot = snapshotProject();
+    if (undoStack.length > 50) undoStack.shift();
+}
+
+function undo() {
+    if (undoStack.length === 0) return;
+    const current = snapshotProject();
+    redoStack.push(current);
+    const previous = undoStack.pop();
+    __currentSnapshot = previous;
+    restoreProjectState(previous);
+}
+
+function redo() {
+    if (redoStack.length === 0) return;
+    const current = snapshotProject();
+    undoStack.push(current);
+    const next = redoStack.pop();
+    __currentSnapshot = next;
+    restoreProjectState(next);
+}
+
+function restoreProjectState(jsonString) {
+    if (!jsonString) return;
+    try {
+        const data = JSON.parse(jsonString);
+        App.Data.loadProjectFromObject(data); 
+    } catch (e) {
+        console.error("Erreur historique", e);
+    }
+}
+
+// Autosave Logic
+let __autosaveTimer = null;
+function initAutosaveWatchers() {
+    setInterval(() => {
+        if(App.Data.hasAutosave()) return; 
+        localStorage.setItem('concepteur_autosave', snapshotProject());
+    }, 5000);
+}
+
+function maybeRestoreAutosave() {
+    const saved = localStorage.getItem('concepteur_autosave');
+    if (saved) {
+        try {
+            const data = JSON.parse(saved);
+            if (data && data.activities) {
+                App.Data.loadProjectFromObject(data);
+                return true;
+            }
+        } catch (e) { console.warn("Autosave corrompu"); }
+    }
+    return false;
+}
+
 /* --- Core Logic & Data Handling --- */
 const BLOOM_TAXONOMY = {
     remember: ["cite", "define", "describe", "identify", "label", "list", "match", "name", "outline", "quote", "recall", "report", "reproduce", "retrieve", "show", "state", "tabulate", "tell"],
@@ -220,7 +321,6 @@ const BLOOM_TAXONOMY = {
 
 const translations = {
     fr: {
-        // ... (conservé identique au fichier original, les changements de texte sont dans le HTML)
         type_none: "Neutre",
         type_demonstration: "Démonstration",
         type_lab: "Labo Pratique",
@@ -228,7 +328,6 @@ const translations = {
         type_evaluation: "Quiz / Certif.",
         type_scenario: "Cas Métier",
         type_migration: "Transition",
-        // ...
         unit_mins: "min", unit_hours: "Heures", unit_days: "Jours", unit_weeks: "Semaines", unit_months: "Mois",
         bloom_placeholder: "Bloom...", bloom_sub_placeholder: "Sous-cat...",
         confirm_delete_activity: "Supprimer tout le module ?", confirm_delete_moment: "Supprimer ce moment ?",
@@ -275,7 +374,6 @@ function initSortableMoments(container) {
     });
 }
 
-// ... (fonctions utilitaires DOM : ensureDefaultMoment, updateMomentIndexes, togglePanel, etc. inchangées mais incluses implicitement) ...
 function ensureDefaultMoment(activityGroup) {
     const momentsRoot = activityGroup.querySelector('.activity-moments-container');
     if (!momentsRoot) return null;
@@ -305,6 +403,7 @@ function updateMomentIndexes(activityGroup) {
 }
 
 function addMomentToActivity(btn) {
+    historyCaptureNow();
     const activityGroup = btn.closest('.activity-group');
     const momentsRoot = activityGroup.querySelector('.activity-moments-container');
     const clone = momentTemplate.content.cloneNode(true);
@@ -486,7 +585,7 @@ function buildExportProjectData() {
             momEl.querySelectorAll('.step-card').forEach(stepEl => {
                 mom.steps.push({
                     title: stepEl.querySelector('.step-input-title').value,
-                    gwsTool: stepEl.querySelector('.gws-tool-select').value, // Google Tool
+                    gwsTool: stepEl.querySelector('.gws-tool-select').value,
                     type: stepEl.querySelector('.learning-type-select').value,
                     duration: stepEl.querySelector('.duration-input').value,
                     unit: stepEl.querySelector('.duration-unit').value,
@@ -532,8 +631,8 @@ function loadProject(event) {
 
 function triggerFileLoad() { document.getElementById('load-file-input').click(); }
 
-function addActivity() {
-    historyCaptureNow();
+function addActivity(capture = true) {
+    if(capture) historyCaptureNow();
     const clone = activityTemplate.content.cloneNode(true);
     root.appendChild(clone);
     const last = root.lastElementChild;
@@ -564,7 +663,6 @@ function cloneModule(btn) {
     const orig = btn.closest('.activity-group');
     const clone = orig.cloneNode(true);
     orig.after(clone);
-    // Deep copy values
     const origInputs = orig.querySelectorAll('input,textarea,select');
     const cloneInputs = clone.querySelectorAll('input,textarea,select');
     origInputs.forEach((inp, i) => cloneInputs[i].value = inp.value);
@@ -644,26 +742,111 @@ App.Timeline = {
     setupTimelineHScroll: () => {},
     updateTimelineHScroll: () => {} 
 };
+
 App.Data = {
-    saveProject, hasAutosave: () => false, loadProjectFromObject: (obj) => { /* Load logic */ } 
+    saveProject, 
+    hasAutosave: () => false, 
+    loadProjectFromObject: function(proj) {
+        if (!proj || !proj.activities) return;
+
+        // 1. Params globaux
+        const k = proj.keyParams || {};
+        const safeVal = (id, val) => { const el = document.getElementById(id); if(el) el.value = val || ''; };
+        
+        safeVal('param-name', k.name);
+        safeVal('param-mode', k.mode);
+        safeVal('param-level', k.level);
+        safeVal('global-class-size', k.cohortSize);
+        safeVal('param-learning-val', k.learningTimeVal);
+        safeVal('param-learning-unit', k.learningTimeUnit);
+        safeVal('param-designed-val', k.designedTimeVal);
+        safeVal('param-authors', k.authors);
+        safeVal('param-description', k.description);
+        safeVal('param-target-audience', k.targetAudience);
+        safeVal('param-prerequisites', k.prerequisites);
+        safeVal('param-aims', k.aims);
+        safeVal('param-outcomes-text', k.outcomesText);
+
+        const list = document.getElementById('outcomes-list');
+        if(list) list.innerHTML = '';
+        if (k.outcomes && Array.isArray(k.outcomes)) {
+            k.outcomes.forEach(o => addOutcome(o));
+        }
+
+        // 2. Activités
+        const root = document.getElementById('activities-root');
+        if(root) root.innerHTML = '';
+        
+        (proj.activities || []).forEach(modData => {
+            const clone = document.getElementById('activity-template').content.cloneNode(true);
+            root.appendChild(clone);
+            const modEl = root.lastElementChild;
+            
+            modEl.querySelector('.activity-title').value = modData.title || '';
+            modEl.querySelector('.activity-description').value = modData.description || '';
+            modEl.querySelector('.activity-target-time').value = modData.targetTime || '';
+            modEl.querySelector('.activity-target-unit').value = modData.targetUnit || '60';
+
+            const momentsRoot = modEl.querySelector('.activity-moments-container');
+            momentsRoot.innerHTML = ''; 
+            
+            (modData.moments || []).forEach(momData => {
+                const momClone = document.getElementById('moment-template').content.cloneNode(true);
+                momentsRoot.appendChild(momClone);
+                const momEl = momentsRoot.lastElementChild;
+                
+                momEl.querySelector('.moment-title').value = momData.title || '';
+                momEl.querySelector('.moment-description').value = momData.description || '';
+                momEl.querySelector('.moment-target-time').value = momData.targetTime || '';
+                momEl.querySelector('.moment-target-unit').value = momData.targetUnit || '60';
+
+                const stepsRoot = momEl.querySelector('.activity-steps-container');
+                
+                (momData.steps || []).forEach(stepData => {
+                    const stepClone = document.getElementById('step-template').content.cloneNode(true);
+                    stepsRoot.appendChild(stepClone);
+                    const stepEl = stepsRoot.lastElementChild;
+                    
+                    stepEl.querySelector('.step-input-title').value = stepData.title || '';
+                    stepEl.querySelector('.gws-tool-select').value = stepData.gwsTool || '';
+                    stepEl.querySelector('.learning-type-select').value = stepData.type || 'none';
+                    stepEl.querySelector('.duration-input').value = stepData.duration || '';
+                    stepEl.querySelector('.duration-unit').value = stepData.unit || '60';
+                    stepEl.querySelector('.step-group-mode').value = stepData.groupMode || 'class';
+                    stepEl.querySelector('.step-group-count').value = stepData.groupCount || '';
+                    stepEl.querySelector('.step-group-size').value = stepData.groupSize || '';
+                    stepEl.querySelector('.trainer-select').value = stepData.trainer || 'present';
+                    stepEl.querySelector('.place-select').value = stepData.place || 'situ';
+                    stepEl.querySelector('.time-select').value = stepData.time || 'sync';
+                    stepEl.querySelector('.step-input-objective').value = stepData.objective || '';
+                    stepEl.querySelector('.step-input-tasks').value = stepData.tasks || '';
+                    stepEl.querySelector('.step-input-notes').value = stepData.notes || '';
+                    
+                    updateStepType(stepEl.querySelector('.learning-type-select'));
+                    toggleGroupMode(stepEl.querySelector('.step-group-mode'));
+                });
+                initSortableSteps(stepsRoot);
+            });
+            initSortableMoments(momentsRoot);
+            updateMomentIndexes(modEl);
+        });
+        
+        updateEmptyState();
+        App.Timeline.updateStats();
+        
+        // Synchro de l'état actuel pour l'historique
+        __currentSnapshot = snapshotProject();
+    }
 };
-// --- À COLLER À LA PLACE ---
+
 App.Export = {
-    // 1. Le gestionnaire du menu déroulant (mis à jour)
     handleExport: (sel) => {
         if (sel.value === 'markdown') exportMarkdown();
-        if (sel.value === 'gdoc_api') App.Export.exportToGoogleDoc(); // <--- Nouvelle option détectée ici
-        
-        // Réinitialise le menu déroulant
+        if (sel.value === 'gdoc_api') App.Export.exportToGoogleDoc();
         sel.value = '';
     },
-
-    // 2. La nouvelle fonction qui parle à Google Apps Script
     exportToGoogleDoc: async function() {
-        // Pour changer le texte pendant le chargement (optionnel mais sympa pour l'UX)
-        const btnOption = document.querySelector('option[value="gdoc_api"]'); 
-        
-        // ⚠️ REMPLACEZ L'URL CI-DESSOUS PAR CELLE DE VOTRE DÉPLOIEMENT APPS SCRIPT ⚠️
+        // ⚠️⚠️⚠️ REMPLACEZ L'URL CI-DESSOUS PAR VOTRE DÉPLOIEMENT APPS SCRIPT ⚠️⚠️⚠️
         const GAS_ENDPOINT_URL = "https://script.google.com/macros/s/VOTRE_ID_DE_DEPLOYEMENT_ICI/exec";
 
         if (GAS_ENDPOINT_URL.includes("VOTRE_ID")) {
@@ -672,19 +855,13 @@ App.Export = {
         }
 
         try {
-            document.body.style.cursor = 'wait'; // Indique que ça travaille
-            
-            // Récupération des données du projet (fonction existante dans app.js)
+            document.body.style.cursor = 'wait';
             const projectData = buildExportProjectData();
-
-            // Envoi à Google Apps Script
             const response = await fetch(GAS_ENDPOINT_URL, {
                 method: "POST",
                 body: JSON.stringify(projectData)
             });
-
             const result = await response.json();
-
             if (result.status === 'success') {
                 if(confirm("Document généré avec succès ! Voulez-vous l'ouvrir maintenant ?")) {
                     window.open(result.url, '_blank');
@@ -692,7 +869,6 @@ App.Export = {
             } else {
                 throw new Error(result.message || "Erreur inconnue du script.");
             }
-
         } catch (error) {
             console.error("Erreur Export:", error);
             alert("Une erreur est survenue lors de la génération :\n" + error.message);
@@ -730,20 +906,17 @@ function exportMarkdown() {
 }
 
 /* --- TIMELINE & STATS LOGIC --- */
-
-// Helper: Formatage durée (ex: 1h 30m)
 function formatTimelineDuration(secs) {
     const mins = Math.round((secs || 0) / 60);
     if (!mins || mins <= 0) return '0m';
-    if (mins >= 43200) return `${parseFloat((mins/43200).toFixed(1))}mo`; // Mois
-    if (mins >= 10080) return `${parseFloat((mins/10080).toFixed(1))}sem`; // Semaines
-    if (mins >= 1440) return `${parseFloat((mins/1440).toFixed(1))}j`; // Jours
+    if (mins >= 43200) return `${parseFloat((mins/43200).toFixed(1))}mo`;
+    if (mins >= 10080) return `${parseFloat((mins/10080).toFixed(1))}sem`;
+    if (mins >= 1440) return `${parseFloat((mins/1440).toFixed(1))}j`;
     const h = Math.floor(mins / 60);
     const m = mins % 60;
     return m === 0 ? `${h}h` : `${h}h${m}`;
 }
 
-// Helper: Récupérer les totaux et la structure détaillée
 function getTotals() {
     const activities = document.querySelectorAll('.activity-group');
     const classSize = parseInt(document.getElementById('global-class-size').value) || 1;
@@ -761,10 +934,8 @@ function getTotals() {
             const unit = parseFloat(step.querySelector('.duration-unit').value) || 60;
             const secs = dur * unit;
             const type = step.querySelector('.learning-type-select').value;
-            const tool = step.querySelector('.gws-tool-select').value; // Récupération de l'outil
+            const tool = step.querySelector('.gws-tool-select').value; 
             const toolLabel = step.querySelector('.gws-tool-select').selectedOptions[0]?.innerText || "";
-            
-            // Labels pour l'affichage (récupérés depuis le HTML traduit)
             const typeLabel = step.querySelector('.learning-type-select').selectedOptions[0]?.innerText || type;
 
             activitySteps.push({
@@ -788,38 +959,30 @@ function getTotals() {
     return { totalSecs, detailedTimeline };
 }
 
-// Fonction principale de mise à jour des statistiques et de la timeline
 App.Timeline.updateStats = function() {
     const totals = getTotals();
-    const t = translations[currentLang]; // Accès aux traductions si besoin
+    const t = translations[currentLang]; 
 
-    // 1. Mise à jour du header (Temps Conçu)
     const designedInput = document.getElementById('param-designed-val');
     const learningUnitSelect = document.getElementById('param-learning-unit');
     const learningUnit = learningUnitSelect.value;
-    
-    // Mise à jour du petit label d'unité à côté du champ "Temps Conçu"
     const unitDisplay = document.getElementById('param-designed-unit-display');
     if(unitDisplay) unitDisplay.innerText = learningUnitSelect.options[learningUnitSelect.selectedIndex].text;
 
-    let divisor = 60; // par défaut mins
+    let divisor = 60; 
     if (learningUnit === 'hours') divisor = 3600;
     if (learningUnit === 'days') divisor = 86400;
     if (learningUnit === 'weeks') divisor = 604800;
     if (learningUnit === 'months') divisor = 2592000;
     
     let designedVal = totals.totalSecs / divisor;
-    // Arrondi : entier pour minutes, 1 décimale pour le reste
     designedInput.value = (learningUnit === 'mins') ? Math.round(designedVal) : parseFloat(designedVal.toFixed(1));
 
-    // 2. Mise à jour des temps par Moment (et badges Module)
     document.querySelectorAll('.activity-group').forEach((actEl, idx) => {
-        // Mise à jour du badge bleu du Module
         const modData = totals.detailedTimeline[idx];
         const modLabel = actEl.querySelector('.activity-total-time');
         if(modLabel && modData) modLabel.innerText = formatTimelineDuration(modData.duration);
 
-        // Comparaison Cible vs Conçu (Module)
         const targetVal = parseFloat(actEl.querySelector('.activity-target-time').value) || 0;
         const targetUnit = parseFloat(actEl.querySelector('.activity-target-unit').value) || 60;
         const targetSecs = targetVal * targetUnit;
@@ -827,8 +990,8 @@ App.Timeline.updateStats = function() {
         const compare = actEl.querySelector('.module-time-compare');
         
         if(badge) {
-            if(targetSecs > 0 && Math.abs(targetSecs - modData.duration) > 60) { // Tolérance 1min
-                badge.classList.add('duration-alert-light'); // Rouge si écart
+            if(targetSecs > 0 && Math.abs(targetSecs - modData.duration) > 60) { 
+                badge.classList.add('duration-alert-light'); 
             } else {
                 badge.classList.remove('duration-alert-light');
             }
@@ -839,7 +1002,6 @@ App.Timeline.updateStats = function() {
             compare.classList.toggle('text-red-600', Math.abs(diff) >= 60);
         }
 
-        // Mise à jour des Moments
         actEl.querySelectorAll('.moment-group').forEach(momEl => {
             let momSecs = 0;
             momEl.querySelectorAll('.step-card').forEach(s => {
@@ -858,14 +1020,17 @@ App.Timeline.updateStats = function() {
         });
     });
 
-    // 3. Rendu de la Timeline Visuelle (Les pistes colorées)
     renderTimelineTracks(totals);
-    
-    // 4. Mise à jour des graphiques
     if(typeof updateCharts === 'function') updateCharts();
 };
 
-// Fonction interne pour dessiner les pistes (Tracks)
+App.Timeline.updateStatsDebounced = function() {
+    if(this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => {
+        this.updateStats();
+    }, 400); 
+};
+
 function renderTimelineTracks(totals) {
     const containerPlanned = document.getElementById('timeline-activities-planned-inner');
     const labelsPlanned = document.getElementById('timeline-activities-planned-labels-inner');
@@ -878,55 +1043,40 @@ function renderTimelineTracks(totals) {
     const containerTime = document.getElementById('timeline-time-inner');
     const containerRuler = document.getElementById('timeline-ruler-inner');
 
-    // Nettoyage
     [containerPlanned, labelsPlanned, containerActivities, labelsActivities, containerSteps, 
      containerGrouping, containerTrainer, containerPlace, containerTime, containerRuler].forEach(el => {
         if(el) el.innerHTML = '';
     });
 
-    // Calcul de la durée totale de référence (max entre Cible et Conçu)
     let plannedTotalSecs = 0;
-    const timelineData = []; // Structure pour le rendu
+    const timelineData = []; 
 
     document.querySelectorAll('.activity-group').forEach((act, idx) => {
         const title = act.querySelector('.activity-title').value || `Module ${idx+1}`;
         const targetVal = parseFloat(act.querySelector('.activity-target-time').value) || 0;
         const targetUnit = parseFloat(act.querySelector('.activity-target-unit').value) || 60;
         const targetSecs = targetVal * targetUnit;
-        
         const designedSecs = totals.detailedTimeline[idx] ? totals.detailedTimeline[idx].duration : 0;
-        
-        // Si pas de cible, on utilise le conçu pour l'échelle
         const segmentSecs = targetSecs > 0 ? targetSecs : designedSecs;
         
-        timelineData.push({
-            title,
-            targetSecs,
-            designedSecs,
-            segmentSecs, // La largeur visuelle du bloc
-            details: totals.detailedTimeline[idx]
-        });
+        timelineData.push({ title, targetSecs, designedSecs, segmentSecs, details: totals.detailedTimeline[idx] });
         plannedTotalSecs += segmentSecs;
     });
 
     const totalScaleSecs = Math.max(totals.totalSecs, plannedTotalSecs);
-    if (totalScaleSecs <= 0) return; // Rien à afficher
+    if (totalScaleSecs <= 0) return; 
 
-    // Génération des pistes
     timelineData.forEach((mod, idx) => {
         if(mod.segmentSecs <= 0) return;
         const widthPct = (mod.segmentSecs / totalScaleSecs) * 100;
 
-        // --- TRACK 0 : STRUCTURE PRÉVUE (TARGET) ---
         if(containerPlanned) {
             const el = document.createElement('div');
-            // Pattern différent si c'est une estimation ou une vraie cible
             const isEst = (mod.targetSecs <= 0); 
             el.className = `h-full border-r border-white last:border-0 relative group box-border flex items-center justify-center cursor-pointer hover:bg-slate-400 transition-colors ${idx%2===0?'bg-slate-200':'bg-slate-300'} ${isEst?'pattern-dots':'pattern-grid-dark'}`;
             el.style.width = `${widthPct}%`;
             el.onclick = () => App.UI.scrollToEditor(idx);
             
-            // Tooltip
             const tt = `<strong>${escapeHtml(mod.title)}</strong><br><span class="text-slate-500">${isEst ? 'Pas de cible définie' : 'Cible : ' + formatTimelineDuration(mod.targetSecs)}</span>`;
             el.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
             el.onmousemove = (e) => App.UI.updateTooltipPos(e);
@@ -934,7 +1084,6 @@ function renderTimelineTracks(totals) {
 
             containerPlanned.appendChild(el);
             
-            // Label sous la piste
             const lab = document.createElement('div');
             lab.className = 'px-1 truncate text-center border-r border-transparent last:border-0 text-[10px] text-slate-500';
             lab.style.width = `${widthPct}%`;
@@ -942,25 +1091,21 @@ function renderTimelineTracks(totals) {
             if(labelsPlanned) labelsPlanned.appendChild(lab);
         }
 
-        // --- TRACK 1 : STRUCTURE CONÇUE (DESIGNED) ---
-        // Cette piste montre le ratio rempli par rapport à la cible
         if(containerActivities) {
             const el = document.createElement('div');
             el.className = 'h-full border-r border-white last:border-0 relative group box-border flex items-center justify-start overflow-hidden bg-slate-100 cursor-pointer';
             el.style.width = `${widthPct}%`;
             el.onclick = () => App.UI.scrollToEditor(idx);
 
-            // Barre de progression (Remplissage)
             const fillRatio = mod.segmentSecs > 0 ? (mod.designedSecs / mod.segmentSecs) : 0;
             const fillEl = document.createElement('div');
             fillEl.className = `h-full transition-all ${idx%2===0?'bg-slate-400':'bg-slate-500'} hover:bg-indigo-500`;
             fillEl.style.width = `${Math.min(100, fillRatio * 100)}%`;
             el.appendChild(fillEl);
 
-            // Alerte si dépassement
             if(mod.designedSecs > mod.segmentSecs && mod.targetSecs > 0) {
                 const alert = document.createElement('div');
-                alert.className = 'absolute inset-0 timeline-alert-light pointer-events-none'; // Hachures rouges
+                alert.className = 'absolute inset-0 timeline-alert-light pointer-events-none'; 
                 el.appendChild(alert);
             }
 
@@ -978,32 +1123,26 @@ function renderTimelineTracks(totals) {
             if(labelsActivities) labelsActivities.appendChild(lab);
         }
 
-        // --- TRACK 2 : PÉDAGOGIE (STEPS) ---
-        // C'est ici qu'on utilise les couleurs Google Workspace
         if(containerSteps && mod.details && mod.details.steps) {
             const wrap = document.createElement('div');
             wrap.className = 'h-full border-r border-white last:border-0 relative flex overflow-hidden';
             wrap.style.width = `${widthPct}%`;
 
-            // On ne remplit que la partie "conçue" à l'intérieur du bloc cible
             const innerContainer = document.createElement('div');
             innerContainer.className = 'h-full flex';
-            // Largeur du conteneur interne = ratio du temps conçu
             const innerWidthPct = mod.segmentSecs > 0 ? (mod.designedSecs / mod.segmentSecs) * 100 : 0;
             innerContainer.style.width = `${innerWidthPct}%`;
 
             mod.details.steps.forEach((step, sIdx) => {
                 if(step.duration <= 0) return;
-                // Largeur de l'étape relative au module conçu
                 const stepPct = (step.duration / mod.designedSecs) * 100;
                 
                 const sEl = document.createElement('div');
                 sEl.style.width = `${stepPct}%`;
-                sEl.style.backgroundColor = TYPE_COLORS[step.type] || '#ccc'; // Couleurs Google !
+                sEl.style.backgroundColor = TYPE_COLORS[step.type] || '#ccc'; 
                 sEl.className = 'h-full border-r border-white/20 last:border-0 hover:brightness-110 transition-all cursor-pointer relative';
                 sEl.onclick = () => App.UI.scrollToEditor(idx, sIdx);
 
-                // Tooltip enrichi avec l'outil Google
                 let tt = `<strong>${escapeHtml(step.title)}</strong><br>`;
                 tt += `<span class="text-xs text-white/90">${step.learningTypeLabel}</span><br>`;
                 if(step.toolLabel) tt += `<span class="text-xs font-bold text-yellow-200">Outil : ${step.toolLabel}</span><br>`;
@@ -1018,18 +1157,14 @@ function renderTimelineTracks(totals) {
             
             wrap.appendChild(innerContainer);
             
-            // Ajout des alertes visuelles (vide / dépassement) sur cette piste aussi
             if(mod.designedSecs < mod.segmentSecs && mod.targetSecs > 0) {
-                // Partie vide (hachures grises ou rouges claires ?)
                 const empty = document.createElement('div');
-                empty.className = 'flex-1 h-full timeline-missing-light'; // Rouge clair hachuré
+                empty.className = 'flex-1 h-full timeline-missing-light'; 
                 wrap.appendChild(empty);
             }
             containerSteps.appendChild(wrap);
         }
 
-        // --- PISTES DÉTAILS (Regroupement, etc.) ---
-        // Helper pour dessiner un segment simple (plein ou rayé)
         const drawDetailTrack = (container, prop, valueMap, legendMap) => {
             if(!container) return;
             const wrap = document.createElement('div');
@@ -1050,8 +1185,6 @@ function renderTimelineTracks(totals) {
                     const el = document.createElement('div');
                     el.style.width = `${sPct}%`;
                     
-                    // Logique visuelle (Plein = Gris foncé, Rayé = Gris clair + hachures)
-                    // On adapte selon la propriété
                     const isSolid = (prop === 'groupMode' && val === 'class') ||
                                     (prop === 'trainer' && val === 'present') ||
                                     (prop === 'place' && val === 'situ') ||
@@ -1059,7 +1192,6 @@ function renderTimelineTracks(totals) {
                     
                     el.className = `h-full border-r border-white/20 last:border-0 cursor-help ${isSolid ? 'bg-slate-500' : 'bg-slate-400 pattern-stripes'}`;
                     
-                    // Tooltip simple
                     const legend = legendMap[val] || val;
                     const tt = `<strong>${legend}</strong><br>${formatTimelineDuration(step.duration)}`;
                     el.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
@@ -1081,13 +1213,12 @@ function renderTimelineTracks(totals) {
 
     });
 
-    // --- RÈGLE TEMPORELLE (Ruler) ---
     if(containerRuler) {
         const totalMins = totalScaleSecs / 60;
         let stepMins = 10;
         if(totalMins > 120) stepMins = 30;
         if(totalMins > 480) stepMins = 60;
-        if(totalMins > 2000) stepMins = 240; // 4h
+        if(totalMins > 2000) stepMins = 240; 
 
         for(let m=0; m<=totalMins; m+=stepMins) {
             const left = (m / totalMins) * 100;
@@ -1101,7 +1232,6 @@ function renderTimelineTracks(totals) {
             lbl.className = 'timeline-ruler-label absolute text-slate-500 font-mono transform -translate-x-1/2';
             lbl.style.left = `${left}%`;
             
-            // Formatage échelle
             if(m===0) lbl.innerText = '0';
             else if(m>=60 && m%60===0) lbl.innerText = `${m/60}h`;
             else lbl.innerText = m;
@@ -1112,14 +1242,6 @@ function renderTimelineTracks(totals) {
     }
 }
 
-// Wrapper debounce pour éviter trop de calculs lors de la frappe
-App.Timeline.updateStatsDebounced = function() {
-    if(this._timer) clearTimeout(this._timer);
-    this._timer = setTimeout(() => {
-        this.updateStats();
-    }, 400); // 400ms de délai
-};
-
 /* --- ZOOM CONTROLS --- */
 let timelineZoom = 1;
 function setTimelineZoom(z) {
@@ -1127,13 +1249,11 @@ function setTimelineZoom(z) {
     document.getElementById('timeline-zoom-value').innerText = Math.round(timelineZoom * 100) + '%';
     document.getElementById('timeline-zoom-range').value = timelineZoom;
     
-    // Application du zoom via CSS width sur les conteneurs internes
     const outers = document.querySelectorAll('.timeline-zoom-outer > .timeline-inner');
     outers.forEach(el => {
         el.style.width = `${timelineZoom * 100}%`;
     });
     
-    // Mise à jour de la scrollbar unifiée
     App.Timeline.updateTimelineHScroll();
 }
 
@@ -1148,14 +1268,12 @@ function initTimelineZoomControls() {
 }
 
 /* --- UNIFIED HORIZONTAL SCROLLBAR --- */
-// Synchronise le scroll entre toutes les pistes et la scrollbar du bas
 App.Timeline.setupTimelineHScroll = function() {
     const scrollbar = document.getElementById('timeline-hscroll');
     const tracks = document.querySelectorAll('.timeline-zoom-outer');
     
     if(!scrollbar) return;
 
-    // Quand on bouge la scrollbar du bas
     scrollbar.addEventListener('scroll', () => {
         if(App.Timeline._scrolling) return;
         App.Timeline._scrolling = true;
@@ -1163,33 +1281,27 @@ App.Timeline.setupTimelineHScroll = function() {
         setTimeout(() => App.Timeline._scrolling = false, 10);
     });
 
-    // Quand on bouge une piste (ex: au touchpad)
     tracks.forEach(track => {
         track.addEventListener('scroll', () => {
             if(App.Timeline._scrolling) return;
             App.Timeline._scrolling = true;
             scrollbar.scrollLeft = track.scrollLeft;
-            // Synchro des autres pistes
             tracks.forEach(other => { if(other !== track) other.scrollLeft = track.scrollLeft; });
             setTimeout(() => App.Timeline._scrolling = false, 10);
         });
     });
 };
 
-// Met à jour la largeur interne de la scrollbar factice pour matcher le contenu zoomé
 App.Timeline.updateTimelineHScroll = function() {
     const scrollbarInner = document.getElementById('timeline-hscroll-inner');
-    const trackInner = document.getElementById('timeline-activities-planned-inner'); // Référence
+    const trackInner = document.getElementById('timeline-activities-planned-inner'); 
     if(scrollbarInner && trackInner) {
-        // La largeur est celle définie par le zoom (ex: 150%)
         scrollbarInner.style.width = trackInner.style.width || '100%';
     }
 };
 
 
 /* --- CHARTS (Graphiques) --- */
-// Logique minimaliste sans bibliothèque externe lourde (Chart.js ou autre), utilisation de Canvas pur pour légèreté.
-
 function updateCharts() {
     drawPieChart('chart-learning-types');
     drawBarChart('chart-group-modes', 'groupMode');
@@ -1198,7 +1310,6 @@ function updateCharts() {
     drawBarChart('chart-trainer-presence', 'trainer');
 }
 
-// Fonction générique pour agréger les durées
 function aggregateData(key) {
     const totals = getTotals();
     const data = {};
@@ -1208,7 +1319,6 @@ function aggregateData(key) {
         mod.steps.forEach(step => {
             if(step.duration > 0) {
                 const val = (key === 'type') ? step.learningTypeLabel : step[key];
-                // Mapping des valeurs techniques vers libellés lisibles pour les barres
                 let label = val;
                 if(key === 'groupMode') label = (val==='class'?'Classe':(val==='groups'?'Sous-groupes':'Individuel'));
                 if(key === 'place') label = (val==='situ'?'Présentiel':(val==='online'?'Distanciel':'Hybride'));
@@ -1231,7 +1341,6 @@ function drawPieChart(canvasId) {
     const { data, total } = aggregateData('type');
     const legendEl = document.getElementById(canvasId + '-legend');
     
-    // Reset
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if(legendEl) legendEl.innerHTML = '';
 
@@ -1247,18 +1356,7 @@ function drawPieChart(canvasId) {
     const centerY = canvas.height / 2;
     const radius = Math.min(centerX, centerY) - 10;
 
-    // On récupère les couleurs depuis TYPE_COLORS via les clés inverses ou en dur
-    // Pour simplifier, on refait un mapping inverse label -> couleur ou on utilise les clés techniques si aggregateData retournait les clés.
-    // Hack: aggregateData retourne les labels (ex: "Labo Pratique"). 
-    // On va chercher la couleur correspondante.
     const findColor = (lbl) => {
-        for(const [k, v] of Object.entries(TYPE_COLORS)) {
-            // C'est un peu fragile si les traductions changent, mais efficace ici.
-            // On regarde si le label correspond à une des options du select
-            // Le plus sûr aurait été d'agréger par clé technique.
-            // Amélioration : aggregateData('type') utilise learningTypeLabel. Utilisons plutot raw type.
-        }
-        // Fallback couleur par hash si non trouvé ou simplification
         if(lbl.includes('Labo')) return TYPE_COLORS.lab;
         if(lbl.includes('Démonstration')) return TYPE_COLORS.demonstration;
         if(lbl.includes('Co-édition')) return TYPE_COLORS.collaboration;
@@ -1272,7 +1370,6 @@ function drawPieChart(canvasId) {
         const sliceAngle = (value / total) * 2 * Math.PI;
         const color = findColor(label);
 
-        // Dessin part
         ctx.beginPath();
         ctx.moveTo(centerX, centerY);
         ctx.arc(centerX, centerY, radius, startAngle, startAngle + sliceAngle);
@@ -1284,7 +1381,6 @@ function drawPieChart(canvasId) {
 
         startAngle += sliceAngle;
 
-        // Légende HTML
         if(legendEl) {
             const pct = Math.round((value/total)*100);
             legendEl.innerHTML += `
@@ -1315,25 +1411,20 @@ function drawBarChart(canvasId, key) {
 
     for (const [label, value] of Object.entries(data)) {
         const pct = (value / total);
-        const barWidth = (canvas.width - 60) * pct; // -60 pour laisser place au texte %
+        const barWidth = (canvas.width - 60) * pct; 
         
-        // Label
         ctx.fillStyle = '#475569';
         ctx.font = "10px sans-serif";
         ctx.fillText(label, 0, y + 10);
 
-        // Barre Fond
         ctx.fillStyle = '#f1f5f9';
-        ctx.fillRect(70, y, canvas.width - 110, barHeight); // Offset X pour label
+        ctx.fillRect(70, y, canvas.width - 110, barHeight); 
 
-        // Barre Valeur
-        ctx.fillStyle = '#64748b'; // Gris par défaut pour les modalités
-        // On pourrait colorer spécifiquement (ex: Présent=Vert, Absent=Rouge)
+        ctx.fillStyle = '#64748b'; 
         if(label === 'Présentiel' || label === 'Synchrone' || label === 'Présent') ctx.fillStyle = '#475569';
         
         ctx.fillRect(70, y, barWidth, barHeight);
 
-        // Pourcentage
         ctx.fillStyle = '#0f172a';
         ctx.fillText(Math.round(pct*100) + '%', 70 + barWidth + 5, y + 11);
 
@@ -1341,16 +1432,6 @@ function drawBarChart(canvasId, key) {
     }
 }
 
-/* --- EXPORT FUNCTIONS (Suite) --- */
-// (exportMarkdown était déjà défini plus haut, voici les autres si nécessaire ou pour compléter)
-
-// Fonction factice pour les exports non-implémentés dans cette version "lite"
-function exportNotImplemented() {
-    alert("Cet export n'est pas encore adapté pour la version Google Workspace. Utilisez l'export Markdown (IA) pour l'instant.");
-}
-
-/* --- Initialisation Globale --- */
-// On attache les fonctions Chart/Timeline au namespace global pour qu'elles soient accessibles
 window.updateCharts = updateCharts;
 
 /* --- GESTION DES MODÈLES (Import/Export Partiel) --- */
@@ -1503,10 +1584,8 @@ window.updateCharts = updateCharts;
               const obj = JSON.parse(reader.result);
               if(!obj.type || !obj.payload) throw new Error("Format invalide");
               loadedTemplate = obj;
-              // Setup UI placement options based on type
               $('template-import-type').textContent = obj.type === 'module' ? 'Module' : (obj.type === 'moment' ? 'Moment' : 'Activité');
               
-              // Populate placement selects (Modules list is always needed)
               const modSels = ['tpl-module-after', 'tpl-moment-module', 'tpl-act-module'];
               const modules = listModules();
               modSels.forEach(id => {
@@ -1521,7 +1600,6 @@ window.updateCharts = updateCharts;
                   });
               });
               
-              // Affichage conditionnel des zones
               hide($('tpl-place-module')); hide($('tpl-place-moment')); hide($('tpl-place-activity'));
               if(obj.type === 'module') show($('tpl-place-module'));
               else if(obj.type === 'moment') { show($('tpl-place-moment')); $( 'tpl-moment-module').dispatchEvent(new Event('change')); }
@@ -1536,12 +1614,7 @@ window.updateCharts = updateCharts;
   function doImport() {
       if(!loadedTemplate) return;
       try {
-          // Logique d'insertion simplifiée pour cette version
-          // On ajoute toujours à la fin du conteneur ciblé pour éviter la complexité des index
           if(loadedTemplate.type === 'module') {
-              // Utilise la fonction globale définie dans app.js (nécessite d'adapter addActivityFromData pour qu'elle accepte un objet data)
-              // NOTE: addActivity() dans app.js crée un vide. Nous devons créer une fonction helper.
-              // Pour simplifier ici: on recharge tout le projet en ajoutant ce module aux données existantes
               const currentProj = buildExportProjectData();
               currentProj.activities.push(loadedTemplate.payload);
               App.Data.loadProjectFromObject(currentProj);
@@ -1550,10 +1623,8 @@ window.updateCharts = updateCharts;
               const currentProj = buildExportProjectData();
               currentProj.activities[modIdx].moments.push(loadedTemplate.payload);
               App.Data.loadProjectFromObject(currentProj);
-          } else { // activity/step
+          } else { 
               const modIdx = $('tpl-act-module').value;
-              // On suppose que l'UI a rempli les moments du module
-              // Pour simplifier l'UI dynamique, on insère dans le dernier moment du module sélectionné
               const currentProj = buildExportProjectData();
               const momList = currentProj.activities[modIdx].moments;
               if(momList.length > 0) {
@@ -1567,7 +1638,6 @@ window.updateCharts = updateCharts;
       } catch(e) { setError('template-import-error', "Erreur import: " + e.message); }
   }
 
-  // Bind Events
   function bind() {
       $('btn-template-export')?.addEventListener('click', openExport);
       $('btn-template-import')?.addEventListener('click', openImport);
@@ -1583,11 +1653,9 @@ window.updateCharts = updateCharts;
       $('template-file-input')?.addEventListener('change', (e) => { readTemplateFile(e.target.files[0]); e.target.value=''; });
   }
 
-  // Init
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
   else bind();
   
-  // Expose globalement pour les onclick HTML
   window.openTemplateExportModal = openExport;
   window.openTemplateImportModal = openImport;
 })();
