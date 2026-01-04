@@ -1305,3 +1305,242 @@ function exportNotImplemented() {
 /* --- Initialisation Globale --- */
 // On attache les fonctions Chart/Timeline au namespace global pour qu'elles soient accessibles
 window.updateCharts = updateCharts;
+
+/* --- GESTION DES MODÈLES (Import/Export Partiel) --- */
+(function initTemplatesFeature() {
+  const $ = (id) => document.getElementById(id);
+  const root = document.getElementById('activities-root');
+  let loadedTemplate = null;
+
+  function ensureInBody(el) { if (!el) return; try { if (!document.body.contains(el)) document.body.appendChild(el); } catch (_) {} }
+  function show(el) { if (!el) return; ensureInBody(el); el.classList.remove('hidden'); el.style.display = el.dataset?.display || 'flex'; }
+  function hide(el) { if (!el) return; el.classList.add('hidden'); el.style.display = 'none'; }
+  function setError(id, msg) { const el = $(id); if (!el) return; el.textContent = msg || ''; if (msg) show(el); else hide(el); }
+  function safeText(v, fallback) { return (v ?? '').toString().trim() || fallback; }
+
+  function listModules() { return Array.from(document.querySelectorAll('.activity-group')); }
+  function listMoments() {
+    const out = [];
+    listModules().forEach((modEl, mi) => {
+      const mt = safeText(modEl.querySelector('.activity-title')?.value, `Module ${mi + 1}`);
+      modEl.querySelectorAll('.moment-group').forEach((momEl, mosi) => {
+        out.push({ modIndex: mi, momentIndex: mosi, modTitle: mt, momentTitle: safeText(momEl.querySelector('.moment-title')?.value, `Moment ${mosi + 1}`), el: momEl, moduleEl: modEl });
+      });
+    });
+    return out;
+  }
+  function listActivities() {
+    const out = [];
+    listMoments().forEach((m) => {
+      m.el.querySelectorAll('.step-card').forEach((stepEl, si) => {
+        out.push({
+          modIndex: m.modIndex, momentIndex: m.momentIndex, stepIndex: si,
+          label: `${m.modTitle} — ${m.momentTitle} — ${safeText(stepEl.querySelector('.step-input-title')?.value, `Activité ${si + 1}`)}`,
+          el: stepEl
+        });
+      });
+    });
+    return out;
+  }
+
+  // --- Builders de données pour l'export ---
+  function buildStepData(stepEl) {
+    return {
+        title: stepEl.querySelector('.step-input-title')?.value || "",
+        gwsTool: stepEl.querySelector('.gws-tool-select')?.value || "",
+        type: stepEl.querySelector('.learning-type-select')?.value || "demonstration",
+        duration: parseFloat(stepEl.querySelector('.duration-input')?.value || "0"),
+        unit: stepEl.querySelector('.duration-unit')?.value || "60",
+        objective: stepEl.querySelector('.step-input-objective')?.value || "",
+        tasks: stepEl.querySelector('.step-input-tasks')?.value || "",
+        notes: stepEl.querySelector('.step-input-notes')?.value || ""
+    };
+  }
+  function buildMomentData(momentEl) {
+    const steps = Array.from(momentEl.querySelectorAll('.step-card')).map(buildStepData);
+    return {
+        title: momentEl.querySelector('.moment-title')?.value || "",
+        description: momentEl.querySelector('.moment-description')?.value || "",
+        targetTime: momentEl.querySelector('.moment-target-time')?.value || "",
+        targetUnit: momentEl.querySelector('.moment-target-unit')?.value || "60",
+        steps
+    };
+  }
+  function buildModuleData(modEl) {
+    const moments = Array.from(modEl.querySelectorAll('.moment-group')).map(buildMomentData);
+    return {
+        title: modEl.querySelector('.activity-title')?.value || "",
+        description: modEl.querySelector('.activity-description')?.value || "",
+        targetTime: modEl.querySelector('.activity-target-time')?.value || "",
+        targetUnit: modEl.querySelector('.activity-target-unit')?.value || "60",
+        moments
+    };
+  }
+
+  function downloadJSON(filename, obj) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+
+  // --- UI Population ---
+  function populateExportItems() {
+    const type = $('template-export-type')?.value || 'module';
+    const sel = $('template-export-item');
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (type === 'module') {
+      listModules().forEach((modEl, i) => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ modIndex: i });
+        opt.textContent = safeText(modEl.querySelector('.activity-title')?.value, `Module ${i + 1}`);
+        sel.appendChild(opt);
+      });
+    } else if (type === 'moment') {
+      listMoments().forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ modIndex: m.modIndex, momentIndex: m.momentIndex });
+        opt.textContent = `${m.modTitle} — ${m.momentTitle}`;
+        sel.appendChild(opt);
+      });
+    } else {
+      listActivities().forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ modIndex: a.modIndex, momentIndex: a.momentIndex, stepIndex: a.stepIndex });
+        opt.textContent = a.label;
+        sel.appendChild(opt);
+      });
+    }
+  }
+
+  // --- Actions ---
+  function openExport() { setError('template-export-error', ''); populateExportItems(); show($('template-export-modal')); }
+  function closeExport() { hide($('template-export-modal')); }
+  
+  function exportTemplateNow() {
+    const type = $('template-export-type')?.value;
+    const itemVal = $('template-export-item')?.value;
+    if (!itemVal) return setError('template-export-error', "Aucun élément sélectionné.");
+    const path = JSON.parse(itemVal);
+    let payload;
+    try {
+        if (type === 'module') payload = buildModuleData(listModules()[path.modIndex]);
+        else if (type === 'moment') payload = buildMomentData(listModules()[path.modIndex].querySelectorAll('.moment-group')[path.momentIndex]);
+        else payload = buildStepData(listModules()[path.modIndex].querySelectorAll('.moment-group')[path.momentIndex].querySelectorAll('.step-card')[path.stepIndex]);
+    } catch (e) { return setError('template-export-error', "Erreur lors de la récupération des données."); }
+
+    const tpl = { templateVersion: "1.0", exportedAt: new Date().toISOString(), type, payload };
+    downloadJSON(`modele_${type}_gws.json`, tpl);
+    closeExport();
+  }
+
+  function openImport() { 
+      setError('template-import-error', ''); 
+      $('template-import-filelabel').textContent = ''; 
+      loadedTemplate = null; 
+      hide($('template-import-placements')); 
+      show($('template-import-modal')); 
+  }
+  function closeImport() { hide($('template-import-modal')); }
+
+  function readTemplateFile(file) {
+      if(!file) return;
+      $('template-import-filelabel').textContent = file.name;
+      const reader = new FileReader();
+      reader.onload = () => {
+          try {
+              const obj = JSON.parse(reader.result);
+              if(!obj.type || !obj.payload) throw new Error("Format invalide");
+              loadedTemplate = obj;
+              // Setup UI placement options based on type
+              $('template-import-type').textContent = obj.type === 'module' ? 'Module' : (obj.type === 'moment' ? 'Moment' : 'Activité');
+              
+              // Populate placement selects (Modules list is always needed)
+              const modSels = ['tpl-module-after', 'tpl-moment-module', 'tpl-act-module'];
+              const modules = listModules();
+              modSels.forEach(id => {
+                  const s = $(id);
+                  if(!s) return;
+                  s.innerHTML = '';
+                  modules.forEach((m,i) => {
+                      const o = document.createElement('option');
+                      o.value = i;
+                      o.textContent = safeText(m.querySelector('.activity-title').value, `Module ${i+1}`);
+                      s.appendChild(o);
+                  });
+              });
+              
+              // Affichage conditionnel des zones
+              hide($('tpl-place-module')); hide($('tpl-place-moment')); hide($('tpl-place-activity'));
+              if(obj.type === 'module') show($('tpl-place-module'));
+              else if(obj.type === 'moment') { show($('tpl-place-moment')); $( 'tpl-moment-module').dispatchEvent(new Event('change')); }
+              else { show($('tpl-place-activity')); $( 'tpl-act-module').dispatchEvent(new Event('change')); }
+              
+              show($('template-import-placements'));
+          } catch(e) { setError('template-import-error', "Fichier invalide ou corrompu."); }
+      };
+      reader.readAsText(file);
+  }
+
+  function doImport() {
+      if(!loadedTemplate) return;
+      try {
+          // Logique d'insertion simplifiée pour cette version
+          // On ajoute toujours à la fin du conteneur ciblé pour éviter la complexité des index
+          if(loadedTemplate.type === 'module') {
+              // Utilise la fonction globale définie dans app.js (nécessite d'adapter addActivityFromData pour qu'elle accepte un objet data)
+              // NOTE: addActivity() dans app.js crée un vide. Nous devons créer une fonction helper.
+              // Pour simplifier ici: on recharge tout le projet en ajoutant ce module aux données existantes
+              const currentProj = buildExportProjectData();
+              currentProj.activities.push(loadedTemplate.payload);
+              App.Data.loadProjectFromObject(currentProj);
+          } else if (loadedTemplate.type === 'moment') {
+              const modIdx = $('tpl-moment-module').value;
+              const currentProj = buildExportProjectData();
+              currentProj.activities[modIdx].moments.push(loadedTemplate.payload);
+              App.Data.loadProjectFromObject(currentProj);
+          } else { // activity/step
+              const modIdx = $('tpl-act-module').value;
+              // On suppose que l'UI a rempli les moments du module
+              // Pour simplifier l'UI dynamique, on insère dans le dernier moment du module sélectionné
+              const currentProj = buildExportProjectData();
+              const momList = currentProj.activities[modIdx].moments;
+              if(momList.length > 0) {
+                  momList[momList.length -1].steps.push(loadedTemplate.payload);
+                  App.Data.loadProjectFromObject(currentProj);
+              } else {
+                  alert("Le module cible n'a pas de moment.");
+              }
+          }
+          closeImport();
+      } catch(e) { setError('template-import-error', "Erreur import: " + e.message); }
+  }
+
+  // Bind Events
+  function bind() {
+      $('btn-template-export')?.addEventListener('click', openExport);
+      $('btn-template-import')?.addEventListener('click', openImport);
+      $('template-export-close')?.addEventListener('click', closeExport);
+      $('template-export-cancel')?.addEventListener('click', closeExport);
+      $('template-export-do')?.addEventListener('click', exportTemplateNow);
+      $('template-export-type')?.addEventListener('change', populateExportItems);
+      
+      $('template-import-close')?.addEventListener('click', closeImport);
+      $('template-import-cancel')?.addEventListener('click', closeImport);
+      $('template-import-do')?.addEventListener('click', doImport);
+      $('template-import-pick')?.addEventListener('click', () => $('template-file-input')?.click());
+      $('template-file-input')?.addEventListener('change', (e) => { readTemplateFile(e.target.files[0]); e.target.value=''; });
+  }
+
+  // Init
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+  
+  // Expose globalement pour les onclick HTML
+  window.openTemplateExportModal = openExport;
+  window.openTemplateImportModal = openImport;
+})();
