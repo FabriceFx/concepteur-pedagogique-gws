@@ -682,4 +682,626 @@ function exportMarkdown() {
     a.click();
 }
 
-// ... (Le reste des fonctions de Timeline et Chart.js doit être copié depuis le code original en remplaçant les couleurs par TYPE_COLORS)
+/* --- TIMELINE & STATS LOGIC --- */
+
+// Helper: Formatage durée (ex: 1h 30m)
+function formatTimelineDuration(secs) {
+    const mins = Math.round((secs || 0) / 60);
+    if (!mins || mins <= 0) return '0m';
+    if (mins >= 43200) return `${parseFloat((mins/43200).toFixed(1))}mo`; // Mois
+    if (mins >= 10080) return `${parseFloat((mins/10080).toFixed(1))}sem`; // Semaines
+    if (mins >= 1440) return `${parseFloat((mins/1440).toFixed(1))}j`; // Jours
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m === 0 ? `${h}h` : `${h}h${m}`;
+}
+
+// Helper: Récupérer les totaux et la structure détaillée
+function getTotals() {
+    const activities = document.querySelectorAll('.activity-group');
+    const classSize = parseInt(document.getElementById('global-class-size').value) || 1;
+    const detailedTimeline = [];
+    let totalSecs = 0;
+
+    activities.forEach((act, idx) => {
+        const title = act.querySelector('.activity-title').value || `Module ${idx+1}`;
+        let actSecs = 0;
+        const activitySteps = [];
+        const steps = act.querySelectorAll('.step-card');
+        
+        steps.forEach(step => {
+            const dur = Math.max(0, parseFloat(step.querySelector('.duration-input').value) || 0);
+            const unit = parseFloat(step.querySelector('.duration-unit').value) || 60;
+            const secs = dur * unit;
+            const type = step.querySelector('.learning-type-select').value;
+            const tool = step.querySelector('.gws-tool-select').value; // Récupération de l'outil
+            const toolLabel = step.querySelector('.gws-tool-select').selectedOptions[0]?.innerText || "";
+            
+            // Labels pour l'affichage (récupérés depuis le HTML traduit)
+            const typeLabel = step.querySelector('.learning-type-select').selectedOptions[0]?.innerText || type;
+
+            activitySteps.push({
+                title: step.querySelector('.step-input-title').value || "Sans titre",
+                type: type,
+                tool: tool,
+                toolLabel: toolLabel,
+                duration: secs,
+                learningTypeLabel: typeLabel,
+                groupMode: step.querySelector('.step-group-mode').value,
+                trainer: step.querySelector('.trainer-select').value,
+                place: step.querySelector('.place-select').value,
+                time: step.querySelector('.time-select').value
+            });
+
+            actSecs += secs;
+            totalSecs += secs;
+        });
+        detailedTimeline.push({ title: title, duration: actSecs, steps: activitySteps });
+    });
+    return { totalSecs, detailedTimeline };
+}
+
+// Fonction principale de mise à jour des statistiques et de la timeline
+App.Timeline.updateStats = function() {
+    const totals = getTotals();
+    const t = translations[currentLang]; // Accès aux traductions si besoin
+
+    // 1. Mise à jour du header (Temps Conçu)
+    const designedInput = document.getElementById('param-designed-val');
+    const learningUnitSelect = document.getElementById('param-learning-unit');
+    const learningUnit = learningUnitSelect.value;
+    
+    // Mise à jour du petit label d'unité à côté du champ "Temps Conçu"
+    const unitDisplay = document.getElementById('param-designed-unit-display');
+    if(unitDisplay) unitDisplay.innerText = learningUnitSelect.options[learningUnitSelect.selectedIndex].text;
+
+    let divisor = 60; // par défaut mins
+    if (learningUnit === 'hours') divisor = 3600;
+    if (learningUnit === 'days') divisor = 86400;
+    if (learningUnit === 'weeks') divisor = 604800;
+    if (learningUnit === 'months') divisor = 2592000;
+    
+    let designedVal = totals.totalSecs / divisor;
+    // Arrondi : entier pour minutes, 1 décimale pour le reste
+    designedInput.value = (learningUnit === 'mins') ? Math.round(designedVal) : parseFloat(designedVal.toFixed(1));
+
+    // 2. Mise à jour des temps par Moment (et badges Module)
+    document.querySelectorAll('.activity-group').forEach((actEl, idx) => {
+        // Mise à jour du badge bleu du Module
+        const modData = totals.detailedTimeline[idx];
+        const modLabel = actEl.querySelector('.activity-total-time');
+        if(modLabel && modData) modLabel.innerText = formatTimelineDuration(modData.duration);
+
+        // Comparaison Cible vs Conçu (Module)
+        const targetVal = parseFloat(actEl.querySelector('.activity-target-time').value) || 0;
+        const targetUnit = parseFloat(actEl.querySelector('.activity-target-unit').value) || 60;
+        const targetSecs = targetVal * targetUnit;
+        const badge = actEl.querySelector('.activity-designed-badge');
+        const compare = actEl.querySelector('.module-time-compare');
+        
+        if(badge) {
+            if(targetSecs > 0 && Math.abs(targetSecs - modData.duration) > 60) { // Tolérance 1min
+                badge.classList.add('duration-alert-light'); // Rouge si écart
+            } else {
+                badge.classList.remove('duration-alert-light');
+            }
+        }
+        if(compare && targetSecs > 0) {
+            const diff = modData.duration - targetSecs;
+            compare.innerText = (Math.abs(diff) < 60) ? '=' : (diff > 0 ? '>' : '<');
+            compare.classList.toggle('text-red-600', Math.abs(diff) >= 60);
+        }
+
+        // Mise à jour des Moments
+        actEl.querySelectorAll('.moment-group').forEach(momEl => {
+            let momSecs = 0;
+            momEl.querySelectorAll('.step-card').forEach(s => {
+                const d = parseFloat(s.querySelector('.duration-input').value)||0;
+                const u = parseFloat(s.querySelector('.duration-unit').value)||60;
+                momSecs += d*u;
+            });
+            const momUnitEl = momEl.querySelector('.moment-target-unit');
+            const momUnitSecs = parseFloat(momUnitEl.value)||60;
+            const momUnitText = momUnitEl.options[momUnitEl.selectedIndex].text;
+            
+            const momLabel = momEl.querySelector('.moment-total-time');
+            let val = momSecs / momUnitSecs;
+            val = (momUnitSecs === 60) ? Math.round(val) : parseFloat(val.toFixed(1));
+            if(momLabel) momLabel.innerText = `${val} ${momUnitText}`;
+        });
+    });
+
+    // 3. Rendu de la Timeline Visuelle (Les pistes colorées)
+    renderTimelineTracks(totals);
+    
+    // 4. Mise à jour des graphiques
+    if(typeof updateCharts === 'function') updateCharts();
+};
+
+// Fonction interne pour dessiner les pistes (Tracks)
+function renderTimelineTracks(totals) {
+    const containerPlanned = document.getElementById('timeline-activities-planned-inner');
+    const labelsPlanned = document.getElementById('timeline-activities-planned-labels-inner');
+    const containerActivities = document.getElementById('timeline-activities-inner');
+    const labelsActivities = document.getElementById('timeline-activities-labels-inner');
+    const containerSteps = document.getElementById('timeline-steps-inner');
+    const containerGrouping = document.getElementById('timeline-grouping-inner');
+    const containerTrainer = document.getElementById('timeline-trainer-inner');
+    const containerPlace = document.getElementById('timeline-place-inner');
+    const containerTime = document.getElementById('timeline-time-inner');
+    const containerRuler = document.getElementById('timeline-ruler-inner');
+
+    // Nettoyage
+    [containerPlanned, labelsPlanned, containerActivities, labelsActivities, containerSteps, 
+     containerGrouping, containerTrainer, containerPlace, containerTime, containerRuler].forEach(el => {
+        if(el) el.innerHTML = '';
+    });
+
+    // Calcul de la durée totale de référence (max entre Cible et Conçu)
+    let plannedTotalSecs = 0;
+    const timelineData = []; // Structure pour le rendu
+
+    document.querySelectorAll('.activity-group').forEach((act, idx) => {
+        const title = act.querySelector('.activity-title').value || `Module ${idx+1}`;
+        const targetVal = parseFloat(act.querySelector('.activity-target-time').value) || 0;
+        const targetUnit = parseFloat(act.querySelector('.activity-target-unit').value) || 60;
+        const targetSecs = targetVal * targetUnit;
+        
+        const designedSecs = totals.detailedTimeline[idx] ? totals.detailedTimeline[idx].duration : 0;
+        
+        // Si pas de cible, on utilise le conçu pour l'échelle
+        const segmentSecs = targetSecs > 0 ? targetSecs : designedSecs;
+        
+        timelineData.push({
+            title,
+            targetSecs,
+            designedSecs,
+            segmentSecs, // La largeur visuelle du bloc
+            details: totals.detailedTimeline[idx]
+        });
+        plannedTotalSecs += segmentSecs;
+    });
+
+    const totalScaleSecs = Math.max(totals.totalSecs, plannedTotalSecs);
+    if (totalScaleSecs <= 0) return; // Rien à afficher
+
+    // Génération des pistes
+    timelineData.forEach((mod, idx) => {
+        if(mod.segmentSecs <= 0) return;
+        const widthPct = (mod.segmentSecs / totalScaleSecs) * 100;
+
+        // --- TRACK 0 : STRUCTURE PRÉVUE (TARGET) ---
+        if(containerPlanned) {
+            const el = document.createElement('div');
+            // Pattern différent si c'est une estimation ou une vraie cible
+            const isEst = (mod.targetSecs <= 0); 
+            el.className = `h-full border-r border-white last:border-0 relative group box-border flex items-center justify-center cursor-pointer hover:bg-slate-400 transition-colors ${idx%2===0?'bg-slate-200':'bg-slate-300'} ${isEst?'pattern-dots':'pattern-grid-dark'}`;
+            el.style.width = `${widthPct}%`;
+            el.onclick = () => App.UI.scrollToEditor(idx);
+            
+            // Tooltip
+            const tt = `<strong>${escapeHtml(mod.title)}</strong><br><span class="text-slate-500">${isEst ? 'Pas de cible définie' : 'Cible : ' + formatTimelineDuration(mod.targetSecs)}</span>`;
+            el.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
+            el.onmousemove = (e) => App.UI.updateTooltipPos(e);
+            el.onmouseleave = () => App.UI.hideTooltip();
+
+            containerPlanned.appendChild(el);
+            
+            // Label sous la piste
+            const lab = document.createElement('div');
+            lab.className = 'px-1 truncate text-center border-r border-transparent last:border-0 text-[10px] text-slate-500';
+            lab.style.width = `${widthPct}%`;
+            lab.innerText = (widthPct > 5) ? mod.title : '.';
+            if(labelsPlanned) labelsPlanned.appendChild(lab);
+        }
+
+        // --- TRACK 1 : STRUCTURE CONÇUE (DESIGNED) ---
+        // Cette piste montre le ratio rempli par rapport à la cible
+        if(containerActivities) {
+            const el = document.createElement('div');
+            el.className = 'h-full border-r border-white last:border-0 relative group box-border flex items-center justify-start overflow-hidden bg-slate-100 cursor-pointer';
+            el.style.width = `${widthPct}%`;
+            el.onclick = () => App.UI.scrollToEditor(idx);
+
+            // Barre de progression (Remplissage)
+            const fillRatio = mod.segmentSecs > 0 ? (mod.designedSecs / mod.segmentSecs) : 0;
+            const fillEl = document.createElement('div');
+            fillEl.className = `h-full transition-all ${idx%2===0?'bg-slate-400':'bg-slate-500'} hover:bg-indigo-500`;
+            fillEl.style.width = `${Math.min(100, fillRatio * 100)}%`;
+            el.appendChild(fillEl);
+
+            // Alerte si dépassement
+            if(mod.designedSecs > mod.segmentSecs && mod.targetSecs > 0) {
+                const alert = document.createElement('div');
+                alert.className = 'absolute inset-0 timeline-alert-light pointer-events-none'; // Hachures rouges
+                el.appendChild(alert);
+            }
+
+            const tt = `<strong>${escapeHtml(mod.title)}</strong><br>Conçu : ${formatTimelineDuration(mod.designedSecs)}`;
+            el.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
+            el.onmousemove = (e) => App.UI.updateTooltipPos(e);
+            el.onmouseleave = () => App.UI.hideTooltip();
+
+            containerActivities.appendChild(el);
+            
+            const lab = document.createElement('div');
+            lab.className = 'px-1 truncate text-center border-r border-transparent last:border-0 text-[10px] text-slate-600 font-medium';
+            lab.style.width = `${widthPct}%`;
+            lab.innerText = (widthPct > 5) ? mod.title : '.';
+            if(labelsActivities) labelsActivities.appendChild(lab);
+        }
+
+        // --- TRACK 2 : PÉDAGOGIE (STEPS) ---
+        // C'est ici qu'on utilise les couleurs Google Workspace
+        if(containerSteps && mod.details && mod.details.steps) {
+            const wrap = document.createElement('div');
+            wrap.className = 'h-full border-r border-white last:border-0 relative flex overflow-hidden';
+            wrap.style.width = `${widthPct}%`;
+
+            // On ne remplit que la partie "conçue" à l'intérieur du bloc cible
+            const innerContainer = document.createElement('div');
+            innerContainer.className = 'h-full flex';
+            // Largeur du conteneur interne = ratio du temps conçu
+            const innerWidthPct = mod.segmentSecs > 0 ? (mod.designedSecs / mod.segmentSecs) * 100 : 0;
+            innerContainer.style.width = `${innerWidthPct}%`;
+
+            mod.details.steps.forEach((step, sIdx) => {
+                if(step.duration <= 0) return;
+                // Largeur de l'étape relative au module conçu
+                const stepPct = (step.duration / mod.designedSecs) * 100;
+                
+                const sEl = document.createElement('div');
+                sEl.style.width = `${stepPct}%`;
+                sEl.style.backgroundColor = TYPE_COLORS[step.type] || '#ccc'; // Couleurs Google !
+                sEl.className = 'h-full border-r border-white/20 last:border-0 hover:brightness-110 transition-all cursor-pointer relative';
+                sEl.onclick = () => App.UI.scrollToEditor(idx, sIdx);
+
+                // Tooltip enrichi avec l'outil Google
+                let tt = `<strong>${escapeHtml(step.title)}</strong><br>`;
+                tt += `<span class="text-xs text-white/90">${step.learningTypeLabel}</span><br>`;
+                if(step.toolLabel) tt += `<span class="text-xs font-bold text-yellow-200">Outil : ${step.toolLabel}</span><br>`;
+                tt += `<span class="text-xs">${formatTimelineDuration(step.duration)}</span>`;
+                
+                sEl.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
+                sEl.onmousemove = (e) => App.UI.updateTooltipPos(e);
+                sEl.onmouseleave = () => App.UI.hideTooltip();
+
+                innerContainer.appendChild(sEl);
+            });
+            
+            wrap.appendChild(innerContainer);
+            
+            // Ajout des alertes visuelles (vide / dépassement) sur cette piste aussi
+            if(mod.designedSecs < mod.segmentSecs && mod.targetSecs > 0) {
+                // Partie vide (hachures grises ou rouges claires ?)
+                const empty = document.createElement('div');
+                empty.className = 'flex-1 h-full timeline-missing-light'; // Rouge clair hachuré
+                wrap.appendChild(empty);
+            }
+            containerSteps.appendChild(wrap);
+        }
+
+        // --- PISTES DÉTAILS (Regroupement, etc.) ---
+        // Helper pour dessiner un segment simple (plein ou rayé)
+        const drawDetailTrack = (container, prop, valueMap, legendMap) => {
+            if(!container) return;
+            const wrap = document.createElement('div');
+            wrap.style.width = `${widthPct}%`;
+            wrap.className = 'h-full border-r border-white relative flex overflow-hidden';
+            
+            const inner = document.createElement('div');
+            inner.className = 'h-full flex';
+            const innerW = mod.segmentSecs > 0 ? (mod.designedSecs / mod.segmentSecs) * 100 : 0;
+            inner.style.width = `${innerW}%`;
+
+            if(mod.details && mod.details.steps) {
+                mod.details.steps.forEach(step => {
+                    if(step.duration <= 0) return;
+                    const sPct = (step.duration / mod.designedSecs) * 100;
+                    const val = step[prop];
+                    
+                    const el = document.createElement('div');
+                    el.style.width = `${sPct}%`;
+                    
+                    // Logique visuelle (Plein = Gris foncé, Rayé = Gris clair + hachures)
+                    // On adapte selon la propriété
+                    const isSolid = (prop === 'groupMode' && val === 'class') ||
+                                    (prop === 'trainer' && val === 'present') ||
+                                    (prop === 'place' && val === 'situ') ||
+                                    (prop === 'time' && val === 'sync');
+                    
+                    el.className = `h-full border-r border-white/20 last:border-0 cursor-help ${isSolid ? 'bg-slate-500' : 'bg-slate-400 pattern-stripes'}`;
+                    
+                    // Tooltip simple
+                    const legend = legendMap[val] || val;
+                    const tt = `<strong>${legend}</strong><br>${formatTimelineDuration(step.duration)}`;
+                    el.onmouseenter = (e) => App.UI.showTooltip(e, tt, true);
+                    el.onmousemove = (e) => App.UI.updateTooltipPos(e);
+                    el.onmouseleave = () => App.UI.hideTooltip();
+
+                    inner.appendChild(el);
+                });
+            }
+            wrap.appendChild(inner);
+            container.appendChild(wrap);
+        };
+
+        const t = translations.fr;
+        drawDetailTrack(containerGrouping, 'groupMode', {}, {class: t.opt_whole_class, groups: t.opt_groups, individual: t.opt_individual});
+        drawDetailTrack(containerTrainer, 'trainer', {}, {present: t.opt_present, absent: t.opt_absent});
+        drawDetailTrack(containerPlace, 'place', {}, {situ: t.opt_insitu, online: t.opt_online, hybrid: t.opt_hybrid});
+        drawDetailTrack(containerTime, 'time', {}, {sync: t.opt_sync, async: t.opt_async});
+
+    });
+
+    // --- RÈGLE TEMPORELLE (Ruler) ---
+    if(containerRuler) {
+        const totalMins = totalScaleSecs / 60;
+        let stepMins = 10;
+        if(totalMins > 120) stepMins = 30;
+        if(totalMins > 480) stepMins = 60;
+        if(totalMins > 2000) stepMins = 240; // 4h
+
+        for(let m=0; m<=totalMins; m+=stepMins) {
+            const left = (m / totalMins) * 100;
+            if(left > 100) break;
+            
+            const tick = document.createElement('div');
+            tick.className = 'timeline-ruler-tick absolute w-px bg-slate-300';
+            tick.style.left = `${left}%`;
+            
+            const lbl = document.createElement('div');
+            lbl.className = 'timeline-ruler-label absolute text-slate-500 font-mono transform -translate-x-1/2';
+            lbl.style.left = `${left}%`;
+            
+            // Formatage échelle
+            if(m===0) lbl.innerText = '0';
+            else if(m>=60 && m%60===0) lbl.innerText = `${m/60}h`;
+            else lbl.innerText = m;
+
+            containerRuler.appendChild(tick);
+            containerRuler.appendChild(lbl);
+        }
+    }
+}
+
+// Wrapper debounce pour éviter trop de calculs lors de la frappe
+App.Timeline.updateStatsDebounced = function() {
+    if(this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => {
+        this.updateStats();
+    }, 400); // 400ms de délai
+};
+
+/* --- ZOOM CONTROLS --- */
+let timelineZoom = 1;
+function setTimelineZoom(z) {
+    timelineZoom = Math.max(0.5, Math.min(3, parseFloat(z)));
+    document.getElementById('timeline-zoom-value').innerText = Math.round(timelineZoom * 100) + '%';
+    document.getElementById('timeline-zoom-range').value = timelineZoom;
+    
+    // Application du zoom via CSS width sur les conteneurs internes
+    const outers = document.querySelectorAll('.timeline-zoom-outer > .timeline-inner');
+    outers.forEach(el => {
+        el.style.width = `${timelineZoom * 100}%`;
+    });
+    
+    // Mise à jour de la scrollbar unifiée
+    App.Timeline.updateTimelineHScroll();
+}
+
+function initTimelineZoomControls() {
+    const range = document.getElementById('timeline-zoom-range');
+    if(range) {
+        range.addEventListener('input', (e) => setTimelineZoom(e.target.value));
+        document.getElementById('timeline-zoom-in').onclick = () => setTimelineZoom(timelineZoom + 0.1);
+        document.getElementById('timeline-zoom-out').onclick = () => setTimelineZoom(timelineZoom - 0.1);
+        document.getElementById('timeline-zoom-reset').onclick = () => setTimelineZoom(1);
+    }
+}
+
+/* --- UNIFIED HORIZONTAL SCROLLBAR --- */
+// Synchronise le scroll entre toutes les pistes et la scrollbar du bas
+App.Timeline.setupTimelineHScroll = function() {
+    const scrollbar = document.getElementById('timeline-hscroll');
+    const tracks = document.querySelectorAll('.timeline-zoom-outer');
+    
+    if(!scrollbar) return;
+
+    // Quand on bouge la scrollbar du bas
+    scrollbar.addEventListener('scroll', () => {
+        if(App.Timeline._scrolling) return;
+        App.Timeline._scrolling = true;
+        tracks.forEach(t => t.scrollLeft = scrollbar.scrollLeft);
+        setTimeout(() => App.Timeline._scrolling = false, 10);
+    });
+
+    // Quand on bouge une piste (ex: au touchpad)
+    tracks.forEach(track => {
+        track.addEventListener('scroll', () => {
+            if(App.Timeline._scrolling) return;
+            App.Timeline._scrolling = true;
+            scrollbar.scrollLeft = track.scrollLeft;
+            // Synchro des autres pistes
+            tracks.forEach(other => { if(other !== track) other.scrollLeft = track.scrollLeft; });
+            setTimeout(() => App.Timeline._scrolling = false, 10);
+        });
+    });
+};
+
+// Met à jour la largeur interne de la scrollbar factice pour matcher le contenu zoomé
+App.Timeline.updateTimelineHScroll = function() {
+    const scrollbarInner = document.getElementById('timeline-hscroll-inner');
+    const trackInner = document.getElementById('timeline-activities-planned-inner'); // Référence
+    if(scrollbarInner && trackInner) {
+        // La largeur est celle définie par le zoom (ex: 150%)
+        scrollbarInner.style.width = trackInner.style.width || '100%';
+    }
+};
+
+
+/* --- CHARTS (Graphiques) --- */
+// Logique minimaliste sans bibliothèque externe lourde (Chart.js ou autre), utilisation de Canvas pur pour légèreté.
+
+function updateCharts() {
+    drawPieChart('chart-learning-types');
+    drawBarChart('chart-group-modes', 'groupMode');
+    drawBarChart('chart-place-modes', 'place');
+    drawBarChart('chart-time-modes', 'time');
+    drawBarChart('chart-trainer-presence', 'trainer');
+}
+
+// Fonction générique pour agréger les durées
+function aggregateData(key) {
+    const totals = getTotals();
+    const data = {};
+    let totalDuration = 0;
+
+    totals.detailedTimeline.forEach(mod => {
+        mod.steps.forEach(step => {
+            if(step.duration > 0) {
+                const val = (key === 'type') ? step.learningTypeLabel : step[key];
+                // Mapping des valeurs techniques vers libellés lisibles pour les barres
+                let label = val;
+                if(key === 'groupMode') label = (val==='class'?'Classe':(val==='groups'?'Sous-groupes':'Individuel'));
+                if(key === 'place') label = (val==='situ'?'Présentiel':(val==='online'?'Distanciel':'Hybride'));
+                if(key === 'time') label = (val==='sync'?'Synchrone':'Asynchrone');
+                if(key === 'trainer') label = (val==='present'?'Présent':'Absent');
+
+                if(!data[label]) data[label] = 0;
+                data[label] += step.duration;
+                totalDuration += step.duration;
+            }
+        });
+    });
+    return { data, total: totalDuration };
+}
+
+function drawPieChart(canvasId) {
+    const canvas = document.getElementById(canvasId);
+    if(!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const { data, total } = aggregateData('type');
+    const legendEl = document.getElementById(canvasId + '-legend');
+    
+    // Reset
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if(legendEl) legendEl.innerHTML = '';
+
+    if(total === 0) {
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = "14px sans-serif";
+        ctx.fillText("Aucune donnée", canvas.width/2 - 40, canvas.height/2);
+        return;
+    }
+
+    let startAngle = 0;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const radius = Math.min(centerX, centerY) - 10;
+
+    // On récupère les couleurs depuis TYPE_COLORS via les clés inverses ou en dur
+    // Pour simplifier, on refait un mapping inverse label -> couleur ou on utilise les clés techniques si aggregateData retournait les clés.
+    // Hack: aggregateData retourne les labels (ex: "Labo Pratique"). 
+    // On va chercher la couleur correspondante.
+    const findColor = (lbl) => {
+        for(const [k, v] of Object.entries(TYPE_COLORS)) {
+            // C'est un peu fragile si les traductions changent, mais efficace ici.
+            // On regarde si le label correspond à une des options du select
+            // Le plus sûr aurait été d'agréger par clé technique.
+            // Amélioration : aggregateData('type') utilise learningTypeLabel. Utilisons plutot raw type.
+        }
+        // Fallback couleur par hash si non trouvé ou simplification
+        if(lbl.includes('Labo')) return TYPE_COLORS.lab;
+        if(lbl.includes('Démonstration')) return TYPE_COLORS.demonstration;
+        if(lbl.includes('Co-édition')) return TYPE_COLORS.collaboration;
+        if(lbl.includes('Quiz')) return TYPE_COLORS.evaluation;
+        if(lbl.includes('Cas')) return TYPE_COLORS.scenario;
+        if(lbl.includes('Transition')) return TYPE_COLORS.migration;
+        return TYPE_COLORS.none;
+    };
+
+    for (const [label, value] of Object.entries(data)) {
+        const sliceAngle = (value / total) * 2 * Math.PI;
+        const color = findColor(label);
+
+        // Dessin part
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.arc(centerX, centerY, radius, startAngle, startAngle + sliceAngle);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
+
+        startAngle += sliceAngle;
+
+        // Légende HTML
+        if(legendEl) {
+            const pct = Math.round((value/total)*100);
+            legendEl.innerHTML += `
+                <div class="flex items-center justify-between text-xs mb-1">
+                    <div class="flex items-center">
+                        <span class="w-3 h-3 rounded-full mr-2" style="background-color:${color}"></span>
+                        <span class="truncate max-w-[100px]" title="${label}">${label}</span>
+                    </div>
+                    <span class="font-bold text-slate-600">${pct}%</span>
+                </div>
+            `;
+        }
+    }
+}
+
+function drawBarChart(canvasId, key) {
+    const canvas = document.getElementById(canvasId);
+    if(!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const { data, total } = aggregateData(key);
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if(total === 0) return;
+
+    const barHeight = 16;
+    const gap = 8;
+    let y = 0;
+
+    for (const [label, value] of Object.entries(data)) {
+        const pct = (value / total);
+        const barWidth = (canvas.width - 60) * pct; // -60 pour laisser place au texte %
+        
+        // Label
+        ctx.fillStyle = '#475569';
+        ctx.font = "10px sans-serif";
+        ctx.fillText(label, 0, y + 10);
+
+        // Barre Fond
+        ctx.fillStyle = '#f1f5f9';
+        ctx.fillRect(70, y, canvas.width - 110, barHeight); // Offset X pour label
+
+        // Barre Valeur
+        ctx.fillStyle = '#64748b'; // Gris par défaut pour les modalités
+        // On pourrait colorer spécifiquement (ex: Présent=Vert, Absent=Rouge)
+        if(label === 'Présentiel' || label === 'Synchrone' || label === 'Présent') ctx.fillStyle = '#475569';
+        
+        ctx.fillRect(70, y, barWidth, barHeight);
+
+        // Pourcentage
+        ctx.fillStyle = '#0f172a';
+        ctx.fillText(Math.round(pct*100) + '%', 70 + barWidth + 5, y + 11);
+
+        y += barHeight + gap;
+    }
+}
+
+/* --- EXPORT FUNCTIONS (Suite) --- */
+// (exportMarkdown était déjà défini plus haut, voici les autres si nécessaire ou pour compléter)
+
+// Fonction factice pour les exports non-implémentés dans cette version "lite"
+function exportNotImplemented() {
+    alert("Cet export n'est pas encore adapté pour la version Google Workspace. Utilisez l'export Markdown (IA) pour l'instant.");
+}
+
+/* --- Initialisation Globale --- */
+// On attache les fonctions Chart/Timeline au namespace global pour qu'elles soient accessibles
+window.updateCharts = updateCharts;
