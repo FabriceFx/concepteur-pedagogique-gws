@@ -650,6 +650,7 @@ App.Data = {
 App.Export = {
     handleExport: (sel) => {
         if(sel.value === 'markdown') exportMarkdown();
+        if (sel.value === 'gdoc_api') App.Export.exportToGoogleDoc();
         // ... other exports
         sel.value = '';
     }
