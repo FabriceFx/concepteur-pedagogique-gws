@@ -733,15 +733,92 @@ function toggleGroupMode(sel) {
 
 function updateGroupMath() { App.Timeline.updateStats(); }
 
+/* --- FONCTIONS UI MANQUANTES (CONTRASTE) --- */
+function toggleHighContrast(e) {
+    if(e) e.preventDefault();
+    document.body.classList.toggle('hc');
+    const isHc = document.body.classList.contains('hc');
+    localStorage.setItem('ld_palette', isHc ? 'hc' : 'standard');
+    updateContrastToggleUI();
+}
+
+function updateContrastToggleUI() {
+    const isHc = document.body.classList.contains('hc');
+    const btnText = document.getElementById('contrast-btn-text');
+    const btn = document.getElementById('contrast-toggle-btn');
+    
+    if (btnText) btnText.innerText = isHc ? "HC" : "STD";
+    if (btn) {
+        // Optionnel : Ajout de style visuel sur le bouton actif
+        if(isHc) {
+            btn.classList.add('bg-slate-200', 'text-indigo-800');
+        } else {
+            btn.classList.remove('bg-slate-200', 'text-indigo-800');
+        }
+    }
+}
+
 /* --- Namespaces --- */
 window.App = window.App || {};
-App.UI = { showTooltip, hideTooltip, updateTooltipPos, flashHighlight, scrollToEditor, updateFocusButtons: () => {}, toggleHighContrast: () => {} };
+
+App.UI = { 
+    showTooltip, 
+    hideTooltip, 
+    updateTooltipPos, 
+    flashHighlight, 
+    scrollToEditor, 
+    updateFocusButtons: () => {}, 
+    // Les fonctions corrigées sont ici :
+    toggleHighContrast,
+    updateContrastToggleUI
+};
+
 App.Timeline = { 
-    updateStats: () => { /* Logic from original code */ }, 
-    updateStatsDebounced: () => { /* Debounce wrapper */ }, 
+    updateStats: () => { 
+        // Logique de redirection vers la fonction globale si elle existe
+        if(typeof App.Timeline.updateStats === 'function' && App.Timeline.updateStats.name !== 'updateStats') {
+            App.Timeline.updateStats();
+        }
+    }, 
+    updateStatsDebounced: () => {
+        if(App.Timeline._timer) clearTimeout(App.Timeline._timer);
+        App.Timeline._timer = setTimeout(() => { App.Timeline.updateStats(); }, 400); 
+    }, 
     setupTimelineHScroll: () => {},
     updateTimelineHScroll: () => {} 
 };
+
+// Ré-attachement de la vraie logique de stats définie plus haut dans le fichier
+// (Assure que le namespace pointe vers la fonction globale définie ligne 800+)
+setTimeout(() => {
+    App.Timeline.updateStats = window.App?.Timeline?.updateStats || function() { 
+        const totals = getTotals(); 
+        renderTimelineTracks(totals); 
+        // Mise à jour des inputs globaux
+        const learningUnitSelect = document.getElementById('param-learning-unit');
+        if(!learningUnitSelect) return;
+        const learningUnit = learningUnitSelect.value;
+        let divisor = 60; 
+        if (learningUnit === 'hours') divisor = 3600;
+        if (learningUnit === 'days') divisor = 86400;
+        if (learningUnit === 'weeks') divisor = 604800;
+        if (learningUnit === 'months') divisor = 2592000;
+        
+        let designedVal = totals.totalSecs / divisor;
+        const designedInput = document.getElementById('param-designed-val');
+        if(designedInput) designedInput.value = (learningUnit === 'mins') ? Math.round(designedVal) : parseFloat(designedVal.toFixed(1));
+        
+        // Mise à jour badges modules
+        document.querySelectorAll('.activity-group').forEach((actEl, idx) => {
+            const modData = totals.detailedTimeline[idx];
+            const modLabel = actEl.querySelector('.activity-total-time');
+            if(modLabel && modData) modLabel.innerText = formatTimelineDuration(modData.duration);
+        });
+        
+        if(typeof updateCharts === 'function') updateCharts();
+    };
+}, 100);
+
 
 App.Data = {
     saveProject, 
@@ -832,10 +909,10 @@ App.Data = {
         });
         
         updateEmptyState();
-        App.Timeline.updateStats();
+        if(App.Timeline.updateStats) App.Timeline.updateStats();
         
         // Synchro de l'état actuel pour l'historique
-        __currentSnapshot = snapshotProject();
+        if(typeof snapshotProject === 'function') __currentSnapshot = snapshotProject();
     }
 };
 
@@ -847,7 +924,7 @@ App.Export = {
     },
     exportToGoogleDoc: async function() {
         // ⚠️⚠️⚠️ REMPLACEZ L'URL CI-DESSOUS PAR VOTRE DÉPLOIEMENT APPS SCRIPT ⚠️⚠️⚠️
-        const GAS_ENDPOINT_URL = "https://script.google.com/macros/s/VOTRE_ID_DE_DEPLOYEMENT_ICI/exec";
+        const GAS_ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbykYJ7xX8Pq4VwRz2gT5L9n0mQ6Xj3kE2vW1sD4o8/exec";
 
         if (GAS_ENDPOINT_URL.includes("VOTRE_ID")) {
             alert("Attention : Vous n'avez pas configuré l'URL du script dans app.js !");
