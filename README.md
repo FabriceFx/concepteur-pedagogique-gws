@@ -5,6 +5,12 @@
 
 # Concepteur Pédagogique Google Workspace
 
+
+[🇫🇷 Version Française](#-version-française) | [🇬🇧 English Version](#-english-version)
+
+
+## 🇫🇷 Version Française
+
 ## Description
 Le **Concepteur Pédagogique Google Workspace** est une application web (SPA - Single Page Application) "Client-Side" conçue pour assister les formateurs et ingénieurs pédagogiques dans la structuration de leurs cours. 
 
@@ -42,3 +48,12 @@ Aucune installation serveur (Node.js, PHP, etc.) n'est requise.
 2.  **Lancement** : Ouvrez simplement le fichier `index.html` dans un navigateur web moderne (Chrome, Firefox, Edge).
 3.  **Déploiement (Optionnel)** : Les fichiers peuvent être hébergés sur n'importe quel serveur statique (GitHub Pages, Netlify, ou un simple bucket Google Cloud Storage).
 
+
+
+---
+## 🇬🇧 English Version
+
+> English translation coming soon.
+
+---
+<p align="center"><a href="https://faucheux.bzh" target="_blank" style="color: inherit; text-decoration: none;">&lt;&gt; par Fabrice Faucheux</a></p>
